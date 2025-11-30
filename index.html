@@ -29,7 +29,16 @@
         <p id="loadingMsg" class="loading">AIが解析中 & 保存中...</p>
     </div>
 
-    <h2>予定リスト</h2>
+    <!-- ★追加: 表示期間フィルター -->
+    <div class="filter-group">
+        <label>表示期間:</label>
+        <input type="date" id="filterStartDate">
+        <span>～</span>
+        <input type="date" id="filterEndDate">
+        <button id="resetFilterBtn" style="margin-left:auto; font-size:0.8em;">今週を表示</button>
+    </div>
+
+    <h2>予定リスト <span id="scheduleCount" style="font-size:0.7em; font-weight:normal;"></span></h2>
     <div id="scheduleList"></div>
 
     <!-- 編集用モーダル -->
@@ -54,19 +63,26 @@
         import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
         // ==========================================
-        // 初期化 (config.jsの変数を使用)
+        // 初期化
         // ==========================================
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
         
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5" });
+        // 注意: gemini-2.5-pro が利用できない場合は gemini-1.5-pro 等に変更してください
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
 
         const userInput = document.getElementById('userInput');
         const addBtn = document.getElementById('addBtn');
         const scheduleList = document.getElementById('scheduleList');
         const loadingMsg = document.getElementById('loadingMsg');
         
+        // フィルター用要素
+        const filterStartDate = document.getElementById('filterStartDate');
+        const filterEndDate = document.getElementById('filterEndDate');
+        const resetFilterBtn = document.getElementById('resetFilterBtn');
+        const scheduleCount = document.getElementById('scheduleCount');
+
         const editModal = document.getElementById('editModal');
         const editTitle = document.getElementById('editTitle');
         const editDate = document.getElementById('editDate');
@@ -76,6 +92,25 @@
         const cancelEditBtn = document.getElementById('cancelEditBtn');
 
         let currentEditId = null;
+        let allSchedulesData = []; // 全データを保持する配列
+
+        // ==========================================
+        // ★追加: 期間設定用関数
+        // ==========================================
+        function setNextOneWeekRange() {
+            const today = new Date();
+            const nextWeek = new Date();
+            nextWeek.setDate(today.getDate() + 7); // 7日後
+
+            // YYYY-MM-DD形式に変換
+            const formatDate = (date) => date.toISOString().split('T')[0];
+
+            filterStartDate.value = formatDate(today);
+            filterEndDate.value = formatDate(nextWeek);
+        }
+
+        // 初期表示時に期間をセット
+        setNextOneWeekRange();
 
         // ==========================================
         // AI解析
@@ -102,20 +137,17 @@
                 const result = await model.generateContent(prompt);
                 const response = await result.response;
                 let jsonText = response.text();
-                
-                // 不要なマークダウン記号があれば削除（念のため）
                 jsonText = jsonText.replace(/```json|```/g, "").trim();
-
                 return JSON.parse(jsonText);
-
             } catch (error) {
-                console.error("詳細なエラー内容:", error); // コンソールでここを確認
-                alert("AIエラー: " + error.message); // エラー内容を画面にも出す
+                console.error("AI解析エラー:", error);
+                alert("AIエラー: " + error.message);
                 return null;
             }
         }
+
         // ==========================================
-        // イベント処理
+        // イベント処理: 追加
         // ==========================================
         addBtn.addEventListener('click', async () => {
             const text = userInput.value;
@@ -126,16 +158,9 @@
 
             const scheduleData = await parseTextToSchedule(text);
 
-            // ==========================================
-            // ★ここが追加・修正したバリデーション箇所★
-            // ==========================================
             if (scheduleData) {
-                // タイトル、日付、時間、説明のいずれかが空文字またはnullの場合はエラーとする
                 if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) {
-                    
-                    alert("【登録エラー】\n必要な情報（タイトル・日付・時間・詳細）のいずれかをAIが生成できませんでした。\n\nより具体的な内容（「いつ」「何時に」「どこで」「何を」）を入力してください。");
-                    
-                    // 処理を中断してボタンを元に戻す
+                    alert("【登録エラー】\n必要な情報が不足しています。\nより具体的に入力してください。");
                     loadingMsg.style.display = 'none';
                     addBtn.disabled = false;
                     return; 
@@ -144,19 +169,16 @@
                 try {
                     const dbRef = ref(db, 'schedules');
                     await push(dbRef, {
-                        title: scheduleData.title,
-                        date: scheduleData.date,
-                        time: scheduleData.time,
-                        description: scheduleData.description,
+                        ...scheduleData,
                         createdAt: new Date().toISOString()
                     });
                     userInput.value = "";
                 } catch (e) {
                     console.error(e);
-                    alert("保存エラー: データベースへの接続を確認してください");
+                    alert("保存エラー: データベース接続を確認してください");
                 }
             } else {
-                alert("AIの解析に失敗しました。もう一度お試しください。");
+                alert("AI解析失敗。再試行してください。");
             }
 
             loadingMsg.style.display = 'none';
@@ -164,22 +186,52 @@
         });
 
         // ==========================================
-        // リスト表示 & 削除・編集機能 (変更なし)
+        // ★修正: リスト取得 & フィルタリング表示
         // ==========================================
         const schedulesRef = ref(db, 'schedules');
 
+        // データ変更時に全データを取得し、グローバル変数に保存してから描画を呼ぶ
         onValue(schedulesRef, (snapshot) => {
-            scheduleList.innerHTML = "";
             const data = snapshot.val();
-            if (!data) return;
+            if (!data) {
+                allSchedulesData = [];
+                renderScheduleList();
+                return;
+            }
 
-            const schedulesArray = Object.entries(data).map(([key, value]) => {
+            // オブジェクトを配列に変換
+            allSchedulesData = Object.entries(data).map(([key, value]) => {
                 return { id: key, ...value };
             });
 
-            schedulesArray.sort((a, b) => new Date(a.date) - new Date(b.date));
+            // 日付順にソート
+            allSchedulesData.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-            schedulesArray.forEach((item) => {
+            // 描画実行
+            renderScheduleList();
+        });
+
+        // 描画関数 (フィルター適用)
+        function renderScheduleList() {
+            scheduleList.innerHTML = "";
+            
+            const startStr = filterStartDate.value;
+            const endStr = filterEndDate.value;
+
+            // 日付フィルター適用
+            const filteredData = allSchedulesData.filter(item => {
+                if (!startStr || !endStr) return true; // 期間未設定なら全表示
+                return item.date >= startStr && item.date <= endStr;
+            });
+
+            scheduleCount.innerText = `(${filteredData.length}件)`;
+
+            if (filteredData.length === 0) {
+                scheduleList.innerHTML = "<p>指定期間の予定はありません。</p>";
+                return;
+            }
+
+            filteredData.forEach((item) => {
                 const card = document.createElement('div');
                 card.className = 'event-card';
                 card.innerHTML = `
@@ -214,8 +266,24 @@
                 actionContainer.appendChild(deleteButton);
                 scheduleList.appendChild(card);
             });
+        }
+
+        // ==========================================
+        // ★追加: フィルター操作イベント
+        // ==========================================
+        // 日付が変わったら即座にリストを再描画
+        filterStartDate.addEventListener('change', renderScheduleList);
+        filterEndDate.addEventListener('change', renderScheduleList);
+
+        // 「今週を表示」ボタン
+        resetFilterBtn.addEventListener('click', () => {
+            setNextOneWeekRange();
+            renderScheduleList();
         });
 
+        // ==========================================
+        // 編集機能 (変更なし)
+        // ==========================================
         function openEditModal(item) {
             currentEditId = item.id;
             editTitle.value = item.title || "";
