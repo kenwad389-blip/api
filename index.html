@@ -24,7 +24,7 @@
 <main>
     <!-- 入力エリア -->
     <div class="input-group">
-        <textarea id="userInput" placeholder="例: 次の金曜の15時に●●で説明会"></textarea>
+        <textarea id="userInput" placeholder="例: 次の金曜の15時に会議室Aで定例ミーティング"></textarea>
         <button id="addBtn">予定を追加</button>
         <p id="loadingMsg" class="loading">AIが解析中 & 保存中...</p>
     </div>
@@ -49,21 +49,12 @@
     </div>
 
     <script type="module">
-        // ==========================================
-        // 1. ライブラリ (remove を追加！)
-        // ==========================================
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        // remove をインポートリストに追加
         import { getDatabase, ref, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
         // ==========================================
-        // 2. 設定 (必ず書き換えてください)
-        // ==========================================
-
-
-        // ==========================================
-        // 3. 初期化
+        // 初期化 (config.jsの変数を使用)
         // ==========================================
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
@@ -87,12 +78,11 @@
         let currentEditId = null;
 
         // ==========================================
-        // AI解析 (Flashモデル用に最適化)
+        // AI解析
         // ==========================================
         async function parseTextToSchedule(text) {
             const today = new Date().toISOString().split('T')[0];
             
-            // プロンプト：JSON形式を厳守するように指示
             const prompt = `
                 今日の日付: ${today}
                 ユーザーの入力からイベント情報を抽出し、JSON形式で返してください。
@@ -111,32 +101,46 @@
             try {
                 const result = await model.generateContent(prompt);
                 const response = await result.response;
+                let jsonText = response.text();
                 
-                // responseMimeType: "application/json" を設定しているので、
-                // 余計な記号なしで綺麗なJSONテキストが返ってくるはずですが、
-                // 念のためテキストを取得してパースします。
-                const jsonText = response.text();
+                // 不要なマークダウン記号があれば削除（念のため）
+                jsonText = jsonText.replace(/```json|```/g, "").trim();
+
                 return JSON.parse(jsonText);
 
             } catch (error) {
-                console.error("AI Error details:", error);
-                alert("AI解析エラー: コンソールを確認してください。\n" + error.message);
+                console.error("詳細なエラー内容:", error); // コンソールでここを確認
+                alert("AIエラー: " + error.message); // エラー内容を画面にも出す
                 return null;
             }
         }
-
         // ==========================================
-        // イベント処理 (追加・削除・編集)
+        // イベント処理
         // ==========================================
         addBtn.addEventListener('click', async () => {
             const text = userInput.value;
             if (!text) return;
+
             loadingMsg.style.display = 'block';
             addBtn.disabled = true;
 
             const scheduleData = await parseTextToSchedule(text);
 
+            // ==========================================
+            // ★ここが追加・修正したバリデーション箇所★
+            // ==========================================
             if (scheduleData) {
+                // タイトル、日付、時間、説明のいずれかが空文字またはnullの場合はエラーとする
+                if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) {
+                    
+                    alert("【登録エラー】\n必要な情報（タイトル・日付・時間・詳細）のいずれかをAIが生成できませんでした。\n\nより具体的な内容（「いつ」「何時に」「どこで」「何を」）を入力してください。");
+                    
+                    // 処理を中断してボタンを元に戻す
+                    loadingMsg.style.display = 'none';
+                    addBtn.disabled = false;
+                    return; 
+                }
+
                 try {
                     const dbRef = ref(db, 'schedules');
                     await push(dbRef, {
@@ -149,14 +153,19 @@
                     userInput.value = "";
                 } catch (e) {
                     console.error(e);
-                    alert("保存エラー: Firebaseの設定を確認してください");
+                    alert("保存エラー: データベースへの接続を確認してください");
                 }
+            } else {
+                alert("AIの解析に失敗しました。もう一度お試しください。");
             }
+
             loadingMsg.style.display = 'none';
             addBtn.disabled = false;
         });
 
-        // リスト表示 & ボタン機能
+        // ==========================================
+        // リスト表示 & 削除・編集機能 (変更なし)
+        // ==========================================
         const schedulesRef = ref(db, 'schedules');
 
         onValue(schedulesRef, (snapshot) => {
@@ -182,13 +191,11 @@
 
                 const actionContainer = card.querySelector('.card-actions');
 
-                // 編集ボタン
                 const editButton = document.createElement('button');
                 editButton.className = 'edit-btn';
                 editButton.innerText = '編集';
                 editButton.onclick = () => openEditModal(item);
                 
-                // 削除ボタン
                 const deleteButton = document.createElement('button');
                 deleteButton.className = 'delete-btn';
                 deleteButton.innerText = '削除';
@@ -209,7 +216,6 @@
             });
         });
 
-        // モーダル操作
         function openEditModal(item) {
             currentEditId = item.id;
             editTitle.value = item.title || "";
