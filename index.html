@@ -1,0 +1,247 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スケジュール管理</title>
+    <!-- jQuery読み込み -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <!-- axios読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <!-- apiキー読み込み -->
+    <script type="text/javascript" src="js/config.js"></script>
+
+    <!-- CSS読み込み -->
+    <link rel="stylesheet" href="css/style.css" />
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+
+    <style></style>
+</head>
+<body>
+<header>
+    <h1>AIスケジューラー</h1>
+</header>
+<main>
+    <!-- 入力エリア -->
+    <div class="input-group">
+        <textarea id="userInput" placeholder="例: 次の金曜の15時に●●で説明会"></textarea>
+        <button id="addBtn">予定を追加</button>
+        <p id="loadingMsg" class="loading">AIが解析中 & 保存中...</p>
+    </div>
+
+    <h2>予定リスト</h2>
+    <div id="scheduleList"></div>
+
+    <!-- 編集用モーダル -->
+    <div id="editModal">
+        <div class="modal-content">
+            <h3>予定の編集</h3>
+            <label>タイトル</label> <input type="text" id="editTitle">
+            <label>日付</label> <input type="date" id="editDate">
+            <label>時間</label> <input type="time" id="editTime">
+            <label>詳細</label> <textarea id="editDescription" rows="3"></textarea>
+            
+            <div class="modal-actions">
+                <button id="cancelEditBtn" class="cancel-btn">キャンセル</button>
+                <button id="saveEditBtn" class="save-btn">保存する</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // ==========================================
+        // 1. ライブラリ (remove を追加！)
+        // ==========================================
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        // remove をインポートリストに追加
+        import { getDatabase, ref, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
+
+        // ==========================================
+        // 2. 設定 (必ず書き換えてください)
+        // ==========================================
+
+
+        // ==========================================
+        // 3. 初期化
+        // ==========================================
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5" });
+
+        const userInput = document.getElementById('userInput');
+        const addBtn = document.getElementById('addBtn');
+        const scheduleList = document.getElementById('scheduleList');
+        const loadingMsg = document.getElementById('loadingMsg');
+        
+        const editModal = document.getElementById('editModal');
+        const editTitle = document.getElementById('editTitle');
+        const editDate = document.getElementById('editDate');
+        const editTime = document.getElementById('editTime');
+        const editDescription = document.getElementById('editDescription');
+        const saveEditBtn = document.getElementById('saveEditBtn');
+        const cancelEditBtn = document.getElementById('cancelEditBtn');
+
+        let currentEditId = null;
+
+        // ==========================================
+        // AI解析 (Flashモデル用に最適化)
+        // ==========================================
+        async function parseTextToSchedule(text) {
+            const today = new Date().toISOString().split('T')[0];
+            
+            // プロンプト：JSON形式を厳守するように指示
+            const prompt = `
+                今日の日付: ${today}
+                ユーザーの入力からイベント情報を抽出し、JSON形式で返してください。
+                
+                出力JSONの仕様:
+                {
+                    "title": "イベント名 (文字列)",
+                    "date": "YYYY-MM-DD (日付文字列)",
+                    "time": "HH:mm (時間文字列, なければ空文字)",
+                    "description": "詳細 (文字列, なければ空文字)"
+                }
+
+                ユーザー入力: "${text}"
+            `;
+
+            try {
+                const result = await model.generateContent(prompt);
+                const response = await result.response;
+                
+                // responseMimeType: "application/json" を設定しているので、
+                // 余計な記号なしで綺麗なJSONテキストが返ってくるはずですが、
+                // 念のためテキストを取得してパースします。
+                const jsonText = response.text();
+                return JSON.parse(jsonText);
+
+            } catch (error) {
+                console.error("AI Error details:", error);
+                alert("AI解析エラー: コンソールを確認してください。\n" + error.message);
+                return null;
+            }
+        }
+
+        // ==========================================
+        // イベント処理 (追加・削除・編集)
+        // ==========================================
+        addBtn.addEventListener('click', async () => {
+            const text = userInput.value;
+            if (!text) return;
+            loadingMsg.style.display = 'block';
+            addBtn.disabled = true;
+
+            const scheduleData = await parseTextToSchedule(text);
+
+            if (scheduleData) {
+                try {
+                    const dbRef = ref(db, 'schedules');
+                    await push(dbRef, {
+                        title: scheduleData.title,
+                        date: scheduleData.date,
+                        time: scheduleData.time,
+                        description: scheduleData.description,
+                        createdAt: new Date().toISOString()
+                    });
+                    userInput.value = "";
+                } catch (e) {
+                    console.error(e);
+                    alert("保存エラー: Firebaseの設定を確認してください");
+                }
+            }
+            loadingMsg.style.display = 'none';
+            addBtn.disabled = false;
+        });
+
+        // リスト表示 & ボタン機能
+        const schedulesRef = ref(db, 'schedules');
+
+        onValue(schedulesRef, (snapshot) => {
+            scheduleList.innerHTML = "";
+            const data = snapshot.val();
+            if (!data) return;
+
+            const schedulesArray = Object.entries(data).map(([key, value]) => {
+                return { id: key, ...value };
+            });
+
+            schedulesArray.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            schedulesArray.forEach((item) => {
+                const card = document.createElement('div');
+                card.className = 'event-card';
+                card.innerHTML = `
+                    <div class="date">${item.date} ${item.time}</div>
+                    <h3>${item.title}</h3>
+                    <p>${item.description}</p>
+                    <div class="card-actions"></div>
+                `;
+
+                const actionContainer = card.querySelector('.card-actions');
+
+                // 編集ボタン
+                const editButton = document.createElement('button');
+                editButton.className = 'edit-btn';
+                editButton.innerText = '編集';
+                editButton.onclick = () => openEditModal(item);
+                
+                // 削除ボタン
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'delete-btn';
+                deleteButton.innerText = '削除';
+                deleteButton.onclick = async () => {
+                    if (confirm(`「${item.title}」を削除しますか？`)) {
+                        try {
+                            const itemRef = ref(db, 'schedules/' + item.id);
+                            await remove(itemRef);
+                        } catch (e) {
+                            alert("削除失敗");
+                        }
+                    }
+                };
+
+                actionContainer.appendChild(editButton);
+                actionContainer.appendChild(deleteButton);
+                scheduleList.appendChild(card);
+            });
+        });
+
+        // モーダル操作
+        function openEditModal(item) {
+            currentEditId = item.id;
+            editTitle.value = item.title || "";
+            editDate.value = item.date || "";
+            editTime.value = item.time || "";
+            editDescription.value = item.description || "";
+            editModal.style.display = 'flex';
+        }
+
+        cancelEditBtn.addEventListener('click', () => {
+            editModal.style.display = 'none';
+            currentEditId = null;
+        });
+
+        saveEditBtn.addEventListener('click', async () => {
+            if (!currentEditId) return;
+            const itemRef = ref(db, 'schedules/' + currentEditId);
+            try {
+                await update(itemRef, {
+                    title: editTitle.value,
+                    date: editDate.value,
+                    time: editTime.value,
+                    description: editDescription.value
+                });
+                editModal.style.display = 'none';
+                currentEditId = null;
+            } catch (e) {
+                alert("更新失敗");
+            }
+        });
+
+    </script>
+</main>
+</body>
+</html>
