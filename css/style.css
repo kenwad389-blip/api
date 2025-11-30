@@ -47,3 +47,26 @@ button { padding: 8px 15px; color: white; border: none; cursor: pointer; border-
 .modal-actions { text-align: right; }
 .cancel-btn { background-color: #888; margin-right: 10px; }
 .save-btn { background-color: #0F9D58; }
+
+.filter-group {
+    background-color: #f0f4f8;
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.filter-group label {
+    font-weight: bold;
+    font-size: 0.9em;
+}
+.filter-group input[type="date"] {
+    padding: 5px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+#resetFilterBtn { background-color: #e99b49; font-size: 0.8rem; } /* オレンジ色 */
+#resetFilterBtn:hover { background-color: #d17224; }
