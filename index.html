@@ -10,35 +10,32 @@
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <!-- apiキー読み込み -->
     <script type="text/javascript" src="js/config.js"></script>
-
     <!-- CSS読み込み -->
     <link rel="stylesheet" href="css/style.css" />
-    <link rel="icon" href="/favicon.ico" type="image/x-icon">
-
-    <style></style>
 </head>
 <body>
 <header>
     <h1>AIスケジューラー</h1>
 </header>
 <main>
-    <!-- 入力エリア -->
+    <!-- 予定入力 -->
     <div class="input-group">
         <textarea id="userInput" placeholder="例: 次の金曜の15時に会議室Aで定例ミーティング"></textarea>
         <button id="addBtn">予定を追加</button>
         <p id="loadingMsg" class="loading">AIが解析中 & 保存中...</p>
     </div>
 
-    <!-- ★追加: 表示期間フィルター -->
+    <!-- 表示期間フィルター -->
     <div class="filter-group">
         <label>表示期間:</label>
         <input type="date" id="filterStartDate">
         <span>～</span>
         <input type="date" id="filterEndDate">
-        <button id="resetFilterBtn" style="margin-left:auto; font-size:0.8em;">今週を表示</button>
+        <button id="resetFilterBtn">今日から1週間を表示</button>
     </div>
 
-    <h2>予定リスト <span id="scheduleCount" style="font-size:0.7em; font-weight:normal;"></span></h2>
+    <!-- 予定リスト -->
+    <h2>予定リスト <span id="scheduleCount"></span></h2>
     <div id="scheduleList"></div>
 
     <!-- 編集用モーダル -->
@@ -60,85 +57,88 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-        import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
+        import { GoogleGenAI } from "https://esm.run/@google/genai";
 
-        // ==========================================
-        // 初期化
-        // ==========================================
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
-        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        const genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         
-        // 注意: gemini-2.5-pro が利用できない場合は gemini-1.5-pro 等に変更してください
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+        const userInput = document.getElementById('userInput');	// 予定入力文字列
+        const addBtn = document.getElementById('addBtn');	// 予定を追加するボタン
+        const scheduleList = document.getElementById('scheduleList');	// 予定リスト
+        const loadingMsg = document.getElementById('loadingMsg');	// 入力された文字列の解析中メッセージ
+        const filterStartDate = document.getElementById('filterStartDate');	// 日付フィルターの期間開始日
+        const filterEndDate = document.getElementById('filterEndDate');	// 日付フィルターの期間終了日
+        const resetFilterBtn = document.getElementById('resetFilterBtn');	// 今日から1週間の表示にリセットするボタン
+        const scheduleCount = document.getElementById('scheduleCount');	// 予定リストの件数
 
-        const userInput = document.getElementById('userInput');
-        const addBtn = document.getElementById('addBtn');
-        const scheduleList = document.getElementById('scheduleList');
-        const loadingMsg = document.getElementById('loadingMsg');
-        
-        // フィルター用要素
-        const filterStartDate = document.getElementById('filterStartDate');
-        const filterEndDate = document.getElementById('filterEndDate');
-        const resetFilterBtn = document.getElementById('resetFilterBtn');
-        const scheduleCount = document.getElementById('scheduleCount');
+        const editModal = document.getElementById('editModal');	// 編集用モーダル
+        const editTitle = document.getElementById('editTitle');	// 編集用モーダル内の「タイトル」
+        const editDate = document.getElementById('editDate');	// 編集用モーダル内の「日付」
+        const editTime = document.getElementById('editTime');	// 編集用モーダル内の「時間」
+        const editDescription = document.getElementById('editDescription');	// 編集用モーダル内の「詳細」
+        const saveEditBtn = document.getElementById('saveEditBtn');	// 編集用モーダル内の「保存ボタン」
+        const cancelEditBtn = document.getElementById('cancelEditBtn');	// 編集用モーダル内の「キャンセルボタン」
 
-        const editModal = document.getElementById('editModal');
-        const editTitle = document.getElementById('editTitle');
-        const editDate = document.getElementById('editDate');
-        const editTime = document.getElementById('editTime');
-        const editDescription = document.getElementById('editDescription');
-        const saveEditBtn = document.getElementById('saveEditBtn');
-        const cancelEditBtn = document.getElementById('cancelEditBtn');
-
-        let currentEditId = null;
+        let currentEditId = null;	// 編集中のリストIDを保持する変数
         let allSchedulesData = []; // 全データを保持する配列
 
-        // ==========================================
-        // ★追加: 期間設定用関数
-        // ==========================================
+        // *** 今日から1週間を表示期間に設定する関数 ***
         function setNextOneWeekRange() {
             const today = new Date();
             const nextWeek = new Date();
-            nextWeek.setDate(today.getDate() + 7); // 7日後
+            nextWeek.setDate(today.getDate() + 7); // 今日から7日後の日付
 
-            // YYYY-MM-DD形式に変換
+	    // *** 日付をYYYY-MM-DD形式に変換する ***
             const formatDate = (date) => date.toISOString().split('T')[0];
 
             filterStartDate.value = formatDate(today);
             filterEndDate.value = formatDate(nextWeek);
         }
 
-        // 初期表示時に期間をセット
+        // *** 期間の初期表示 ***
         setNextOneWeekRange();
 
-        // ==========================================
-        // AI解析
-        // ==========================================
+        // *** 入力文字列のAI解析（非同期関数） ***
         async function parseTextToSchedule(text) {
             const today = new Date().toISOString().split('T')[0];
             
             const prompt = `
                 今日の日付: ${today}
-                ユーザーの入力からイベント情報を抽出し、JSON形式で返してください。
-                
-                出力JSONの仕様:
-                {
-                    "title": "イベント名 (文字列)",
-                    "date": "YYYY-MM-DD (日付文字列)",
-                    "time": "HH:mm (時間文字列, なければ空文字)",
-                    "description": "詳細 (文字列, なければ空文字)"
-                }
-
+                以下のユーザー入力からスケジュール情報を抽出してください。
                 ユーザー入力: "${text}"
             `;
 
             try {
-                const result = await model.generateContent(prompt);
-                const response = await result.response;
-                let jsonText = response.text();
-                jsonText = jsonText.replace(/```json|```/g, "").trim();
+                const result = await genAI.models.generateContent({ // AIに質問を投げる
+                    model: "gemini-2.5-flash",
+                    contents: [
+                        {
+                            parts: [
+                                { text: prompt }
+                            ]
+                        }
+                    ],
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                title: { type: "STRING", description: "イベント名" },
+                                date: { type: "STRING", description: "YYYY-MM-DD形式の日付" },
+                                time: { type: "STRING", description: "HH:mm形式の時間。なければ空文字" },
+                                description: { type: "STRING", description: "詳細。なければ空文字" }
+                            },
+                            required: ["title", "date", "time", "description"]
+                        }
+                    }
+                });
+
+                const jsonText = result.text;
+                
+                if (!jsonText) return null;
                 return JSON.parse(jsonText);
+
             } catch (error) {
                 console.error("AI解析エラー:", error);
                 alert("AIエラー: " + error.message);
@@ -146,33 +146,32 @@
             }
         }
 
-        // ==========================================
-        // イベント処理: 追加
-        // ==========================================
+        // *** 追加ボタンが押されたとき ***
         addBtn.addEventListener('click', async () => {
             const text = userInput.value;
-            if (!text) return;
+            if (!text) return;	// 文字が入っていなければ何もしない
 
-            loadingMsg.style.display = 'block';
+            loadingMsg.style.display = 'block';	// 編集用モーダルをブロック要素で表示
             addBtn.disabled = true;
 
+	    // *** 入力文字列のAI解析を開始 ***
             const scheduleData = await parseTextToSchedule(text);
 
             if (scheduleData) {
-                if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) {
+                if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) { // タイトル、日付、時間、詳細のいずれか抜き出せない場合は何もしない
                     alert("【登録エラー】\n必要な情報が不足しています。\nより具体的に入力してください。");
-                    loadingMsg.style.display = 'none';
+                    loadingMsg.style.display = 'none';	// 編集用モーダルを表示しない
                     addBtn.disabled = false;
                     return; 
                 }
 
                 try {
                     const dbRef = ref(db, 'schedules');
-                    await push(dbRef, {
+                    await push(dbRef, {	// データベースに保存
                         ...scheduleData,
                         createdAt: new Date().toISOString()
                     });
-                    userInput.value = "";
+                    userInput.value = "";	// 入力欄をクリア
                 } catch (e) {
                     console.error(e);
                     alert("保存エラー: データベース接続を確認してください");
@@ -181,57 +180,54 @@
                 alert("AI解析失敗。再試行してください。");
             }
 
-            loadingMsg.style.display = 'none';
+            loadingMsg.style.display = 'none';	// 編集用モーダルを表示しない
             addBtn.disabled = false;
         });
 
-        // ==========================================
-        // ★修正: リスト取得 & フィルタリング表示
-        // ==========================================
-        const schedulesRef = ref(db, 'schedules');
+        const schedulesRef = ref(db, 'schedules');	// リスト取得用
 
-        // データ変更時に全データを取得し、グローバル変数に保存してから描画を呼ぶ
+        // *** データが変更したら全データを取得する ***
         onValue(schedulesRef, (snapshot) => {
             const data = snapshot.val();
-            if (!data) {
+            if (!data) {	// データがなければ何もしない
                 allSchedulesData = [];
                 renderScheduleList();
                 return;
             }
 
-            // オブジェクトを配列に変換
+            // *** オブジェクトを配列に変換 ***
             allSchedulesData = Object.entries(data).map(([key, value]) => {
                 return { id: key, ...value };
             });
 
-            // 日付順にソート
+            // *** 日付順にソート ***
             allSchedulesData.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-            // 描画実行
+            // *** リストを画面表示 ***
             renderScheduleList();
         });
 
-        // 描画関数 (フィルター適用)
+        // *** リストを画面に表示する関数 (フィルター適用) ***
         function renderScheduleList() {
             scheduleList.innerHTML = "";
             
             const startStr = filterStartDate.value;
             const endStr = filterEndDate.value;
 
-            // 日付フィルター適用
+            // *** 期間の開始日から終了日までに該当するものを抽出 ***
             const filteredData = allSchedulesData.filter(item => {
                 if (!startStr || !endStr) return true; // 期間未設定なら全表示
                 return item.date >= startStr && item.date <= endStr;
             });
 
-            scheduleCount.innerText = `(${filteredData.length}件)`;
+            scheduleCount.innerText = `(${filteredData.length}件)`;	// リストの件数
 
-            if (filteredData.length === 0) {
+            if (filteredData.length === 0) {	// 件数がゼロの場合
                 scheduleList.innerHTML = "<p>指定期間の予定はありません。</p>";
                 return;
             }
 
-            filteredData.forEach((item) => {
+            filteredData.forEach((item) => {	// リストからカードを1件ずつ作成
                 const card = document.createElement('div');
                 card.className = 'event-card';
                 card.innerHTML = `
@@ -243,14 +239,16 @@
 
                 const actionContainer = card.querySelector('.card-actions');
 
-                const editButton = document.createElement('button');
+                const editButton = document.createElement('button');	// 編集ボタン
                 editButton.className = 'edit-btn';
                 editButton.innerText = '編集';
                 editButton.onclick = () => openEditModal(item);
                 
-                const deleteButton = document.createElement('button');
+                const deleteButton = document.createElement('button');	// 削除ボタン
                 deleteButton.className = 'delete-btn';
                 deleteButton.innerText = '削除';
+
+	        // *** 削除ボタンが押されたとき ***
                 deleteButton.onclick = async () => {
                     if (confirm(`「${item.title}」を削除しますか？`)) {
                         try {
@@ -268,41 +266,38 @@
             });
         }
 
-        // ==========================================
-        // ★追加: フィルター操作イベント
-        // ==========================================
-        // 日付が変わったら即座にリストを再描画
+        // *** フィルターの日付が変わったらリストを再表示 ***
         filterStartDate.addEventListener('change', renderScheduleList);
         filterEndDate.addEventListener('change', renderScheduleList);
 
-        // 「今週を表示」ボタン
+        // *** 1週間を表示するボタンが押されたらフィルターの日付を更新してリストを再表示 ***
         resetFilterBtn.addEventListener('click', () => {
             setNextOneWeekRange();
             renderScheduleList();
         });
 
-        // ==========================================
-        // 編集機能 (変更なし)
-        // ==========================================
+        // *** 編集用モーダルが呼び出されたとき ***
         function openEditModal(item) {
             currentEditId = item.id;
             editTitle.value = item.title || "";
             editDate.value = item.date || "";
             editTime.value = item.time || "";
             editDescription.value = item.description || "";
-            editModal.style.display = 'flex';
+            editModal.style.display = 'flex';	// 編集用モーダルを表示
         }
 
+        // *** 編集のキャンセルボタンが押されたとき ***
         cancelEditBtn.addEventListener('click', () => {
             editModal.style.display = 'none';
             currentEditId = null;
         });
 
+        // *** 編集の保存ボタンが押されたとき ***
         saveEditBtn.addEventListener('click', async () => {
             if (!currentEditId) return;
             const itemRef = ref(db, 'schedules/' + currentEditId);
             try {
-                await update(itemRef, {
+                await update(itemRef, {	// 上書き保存
                     title: editTitle.value,
                     date: editDate.value,
                     time: editTime.value,
