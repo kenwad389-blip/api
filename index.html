@@ -1,6 +1,7 @@
 <!doctype html>
 <html>
 <head>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>スケジュール管理</title>
@@ -15,12 +16,17 @@
 </head>
 <body>
 <header>
-    <h1>AIスケジューラー</h1>
+    <h1>AIスケジュール登録</h1>
 </header>
 <main>
     <!-- 予定入力 -->
     <div class="input-group">
-        <textarea id="userInput" placeholder="例: 次の金曜の15時に会議室Aで定例ミーティング"></textarea>
+        <textarea id="userInput" placeholder="日付、時間、場所、イベント名を必ず含めて入力！"></textarea>
+        <div id="historyContainer">
+            <span>履歴: </span>
+            <div id="historyList"></div>
+            <button id="clearHistoryBtn">クリア</button>
+        </div>
         <button id="addBtn">予定を追加</button>
         <p id="loadingMsg" class="loading">AIが解析中 & 保存中...</p>
     </div>
@@ -45,7 +51,7 @@
             <label>タイトル</label> <input type="text" id="editTitle">
             <label>日付</label> <input type="date" id="editDate">
             <label>時間</label> <input type="time" id="editTime">
-            <label>詳細</label> <textarea id="editDescription" rows="3"></textarea>
+            <label>場所</label> <textarea id="editDescription" rows="3"></textarea>
             
             <div class="modal-actions">
                 <button id="cancelEditBtn" class="cancel-btn">キャンセル</button>
@@ -71,14 +77,18 @@
         const filterEndDate = document.getElementById('filterEndDate');	// 日付フィルターの期間終了日
         const resetFilterBtn = document.getElementById('resetFilterBtn');	// 今日から1週間の表示にリセットするボタン
         const scheduleCount = document.getElementById('scheduleCount');	// 予定リストの件数
+        const historyList = document.getElementById('historyList');	// localStorageに保存された予定入力履歴
+        const clearHistoryBtn = document.getElementById('clearHistoryBtn');	// localStorageに保存された履歴をクリアするボタン
+        const HISTORY_KEY = 'scheduler_input_history'; // localStorageのキー
 
         const editModal = document.getElementById('editModal');	// 編集用モーダル
         const editTitle = document.getElementById('editTitle');	// 編集用モーダル内の「タイトル」
         const editDate = document.getElementById('editDate');	// 編集用モーダル内の「日付」
         const editTime = document.getElementById('editTime');	// 編集用モーダル内の「時間」
-        const editDescription = document.getElementById('editDescription');	// 編集用モーダル内の「詳細」
+        const editDescription = document.getElementById('editDescription');	// 編集用モーダル内の「場所」
         const saveEditBtn = document.getElementById('saveEditBtn');	// 編集用モーダル内の「保存ボタン」
         const cancelEditBtn = document.getElementById('cancelEditBtn');	// 編集用モーダル内の「キャンセルボタン」
+
 
         let currentEditId = null;	// 編集中のリストIDを保持する変数
         let allSchedulesData = []; // 全データを保持する配列
@@ -98,6 +108,49 @@
 
         // *** 期間の初期表示 ***
         setNextOneWeekRange();
+
+        // *** localStorageから履歴を取得して表示する関数 ***
+        function renderHistory() {
+            const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+            historyList.innerHTML = '';
+
+            history.forEach(text => {
+                const chip = document.createElement('span');
+                chip.className = 'history-chip';
+                chip.textContent = text.length > 15 ? text.substring(0, 15) + '...' : text;	// 長すぎる場合は省略表示
+                chip.title = text; // マウスホバーで全文表示
+                
+                chip.onclick = () => {	// クリックしたらテキストエリアに入力
+                    userInput.value = text;
+                };
+                historyList.appendChild(chip);
+            });
+        }
+
+        // *** localStorageに履歴を保存する関数 ***
+        function saveHistory(text) {
+            let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+            history = history.filter(h => h !== text);	// 重複があれば削除（最新を先頭にするため）
+            history.unshift(text);	// 先頭に追加
+
+            if (history.length > 5) {	// 最大5件まで保持
+                history = history.slice(0, 5);
+            }
+
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            renderHistory();
+        }
+
+        // *** 履歴クリアボタンが押されたとき ***
+        clearHistoryBtn.addEventListener('click', () => {
+            if(confirm('入力履歴をすべて削除しますか？')) {
+                localStorage.removeItem(HISTORY_KEY);
+                renderHistory();
+            }
+        });
+
+        // *** 初回読み込み時に履歴を表示 ***
+        renderHistory();
 
         // *** 入力文字列のAI解析（非同期関数） ***
         async function parseTextToSchedule(text) {
@@ -127,7 +180,7 @@
                                 title: { type: "STRING", description: "イベント名" },
                                 date: { type: "STRING", description: "YYYY-MM-DD形式の日付" },
                                 time: { type: "STRING", description: "HH:mm形式の時間。なければ空文字" },
-                                description: { type: "STRING", description: "詳細。なければ空文字" }
+                                description: { type: "STRING", description: "場所。なければ空文字" }
                             },
                             required: ["title", "date", "time", "description"]
                         }
@@ -158,7 +211,7 @@
             const scheduleData = await parseTextToSchedule(text);
 
             if (scheduleData) {
-                if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) { // タイトル、日付、時間、詳細のいずれか抜き出せない場合は何もしない
+                if (!scheduleData.title || !scheduleData.date || !scheduleData.time || !scheduleData.description) { // タイトル、日付、時間、場所のいずれか抜き出せない場合は何もしない
                     alert("【登録エラー】\n必要な情報が不足しています。\nより具体的に入力してください。");
                     loadingMsg.style.display = 'none';	// 編集用モーダルを表示しない
                     addBtn.disabled = false;
@@ -171,6 +224,8 @@
                         ...scheduleData,
                         createdAt: new Date().toISOString()
                     });
+
+                    saveHistory(text);	// 保存成功時に履歴にも追加
                     userInput.value = "";	// 入力欄をクリア
                 } catch (e) {
                     console.error(e);
@@ -200,8 +255,14 @@
                 return { id: key, ...value };
             });
 
-            // *** 日付順にソート ***
-            allSchedulesData.sort((a, b) => new Date(a.date) - new Date(b.date));
+            // *** 日付順 → 時間順にソート ***
+            allSchedulesData.sort((a, b) => {
+                const dateDiff = new Date(a.date) - new Date(b.date);
+                if (dateDiff !== 0) return dateDiff;
+                if ((a.time || "") < (b.time || "")) return -1;
+                if ((a.time || "") > (b.time || "")) return 1;
+                return 0;
+            });
 
             // *** リストを画面表示 ***
             renderScheduleList();
